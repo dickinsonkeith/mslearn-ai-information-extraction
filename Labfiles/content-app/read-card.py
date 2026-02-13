@@ -1,105 +1,80 @@
-from dotenv import load_dotenv
-import os
-import sys
-import time
-import requests
-import json
-
-
-def main():
-
-    # Clear the console
-    os.system('cls' if os.name=='nt' else 'clear')
-
-    try:
-
-        # Get the business card
-        image_file = 'biz-card-1.png'
-        if len(sys.argv) > 1:
-            image_file = sys.argv[1]
-
-        # Get config settings
-        load_dotenv()
-        ai_svc_endpoint = os.getenv('ENDPOINT')
-        ai_svc_key = os.getenv('KEY')
-        analyzer = os.getenv('ANALYZER_NAME')
-
-        # Analyze the business card
-        analyze_card (image_file, analyzer, ai_svc_endpoint, ai_svc_key)
-
-        print("\n")
-
-    except Exception as ex:
-        print(ex)
-
-
-
-def analyze_card (image_file, analyzer, endpoint, key):
-    
-    # Use Content Understanding to analyze the image
-    print (f"Analyzing {image_file}")
+def analyze_card(image_file, analyzer, endpoint, key):
+    # Everything below is now properly indented
+    print(f"Analyzing {image_file}")
 
     # Set the API version
     CU_VERSION = "2025-05-01-preview"
 
     # Read the image data
-    with open(image_file, "rb") as file:
-        image_data = file.read()
+    try:
+        with open(image_file, "rb") as file:
+            image_data = file.read()
+    except FileNotFoundError:
+        print(f"Error: The file {image_file} was not found.")
+        return
 
-    ## Use a POST request to submit the image data to the analyzer
+    # Use a POST request to submit the image data
     print("Submitting request...")
     headers = {
         "Ocp-Apim-Subscription-Key": key,
-        "Content-Type": "application/octet-stream"}
+        "Content-Type": "application/octet-stream"
+    }
     url = f'{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze?api-version={CU_VERSION}'
+    
     response = requests.post(url, headers=headers, data=image_data)
+    
+    if response.status_code != 202:
+        print(f"Failed to submit: {response.status_code} - {response.text}")
+        return
 
-    # Get the response and extract the ID assigned to the analysis operation
-    print(response.status_code)
+    # Extract the operation ID from headers or body
+    # Azure Content Understanding usually returns the operation-location URL in headers
+    # but based on your code, we'll check the response body for an ID
     response_json = response.json()
     id_value = response_json.get("id")
 
-    # Use a GET request to check the status of the analysis operation
-    print ('Getting results...')
-    time.sleep(1)
+    # Use a GET request to check the status
+    print('Getting results...')
     result_url = f'{endpoint}/contentunderstanding/analyzerResults/{id_value}?api-version={CU_VERSION}'
-    result_response = requests.get(result_url, headers=headers)
-    print(result_response.status_code)
-
-    # Keep polling until the analysis is complete
-    status = result_response.json().get("status")
-    while status == "Running":
-        time.sleep(1)
+    
+    while True:
         result_response = requests.get(result_url, headers=headers)
-        status = result_response.json().get("status")
+        result_json = result_response.json()
+        status = result_json.get("status")
+
+        print(f"Status: {status}")
+
+        if status == "Succeeded":
+            break
+        elif status == "Failed":
+            print("Analysis failed.")
+            return
+        
+        time.sleep(2) # Wait before polling again
 
     # Process the analysis results
-    if status == "Succeeded":
-        print("Analysis succeeded:\n")
-        result_json = result_response.json()
-        output_file = "results.json"
-        with open(output_file, "w") as json_file:
-            json.dump(result_json, json_file, indent=4)
-            print(f"Response saved in {output_file}\n")
+    print("Analysis succeeded:\n")
+    output_file = "results.json"
+    with open(output_file, "w") as json_file:
+        json.dump(result_json, json_file, indent=4)
+        print(f"Response saved in {output_file}\n")
 
-        # Iterate through the fields and extract the names and type-specific values
-        contents = result_json["result"]["contents"]
-        for content in contents:
-            if "fields" in content:
-                fields = content["fields"]
-                for field_name, field_data in fields.items():
-                    if field_data['type'] == "string":
-                        print(f"{field_name}: {field_data['valueString']}")
-                    elif field_data['type'] == "number":
-                        print(f"{field_name}: {field_data['valueNumber']}")
-                    elif field_data['type'] == "integer":
-                        print(f"{field_name}: {field_data['valueInteger']}")
-                    elif field_data['type'] == "date":
-                        print(f"{field_name}: {field_data['valueDate']}")
-                    elif field_data['type'] == "time":
-                        print(f"{field_name}: {field_data['valueTime']}")
-                    elif field_data['type'] == "array":
-                        print(f"{field_name}: {field_data['valueArray']}")
-
-if __name__ == "__main__":
-    main()        
+    # Extract the fields
+    contents = result_json.get("result", {}).get("contents", [])
+    for content in contents:
+        fields = content.get("fields", {})
+        for field_name, field_data in fields.items():
+            # Mapping types to their specific value keys
+            value_mapping = {
+                "string": "valueString",
+                "number": "valueNumber",
+                "integer": "valueInteger",
+                "date": "valueDate",
+                "time": "valueTime",
+                "array": "valueArray"
+            }
+            
+            f_type = field_data.get('type')
+            val_key = value_mapping.get(f_type)
+            if val_key and val_key in field_data:
+                print(f"{field_name}: {field_data[val_key]}")
